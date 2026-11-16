@@ -10,7 +10,7 @@
 
 採点の基準は data/eval/rubric.md に書いてある。基準ごとに理由を先に書かせてから、
 pass / fail / unsure のどれかを返させる（構造化出力）。unsure は自動判定から外し、人が見る「要確認」に回す。
-「第N回」が末尾にあるかは、LLM に聞かずにコードで判定する。
+「第N回」が末尾にあるか、および第1〜13回以外の回数を根拠として挙げていないかは、コードでも判定する。
 """
 
 import argparse
@@ -89,6 +89,15 @@ def check_lecture_mark(answer: str) -> Verdict:
     lines = [line.strip() for line in answer.strip().splitlines() if line.strip()]
     tail = lines[-1] if lines else ""
     return "pass" if re.search(r"第\s*\d+\s*回", tail) else "fail"
+
+
+def out_of_range_lecture_reference(answer: str) -> int | None:
+    """回答中に講座の範囲外（第1〜13回以外）の回数があれば、その番号を返す。"""
+    for match in re.finditer(r"第\s*(\d+)\s*回", answer):
+        lecture = int(match.group(1))
+        if not 1 <= lecture <= 13:
+            return lecture
+    return None
 
 
 def reference_text(case: dict) -> str:
@@ -196,6 +205,12 @@ def judge_cases(agent: Agent, cases: list[dict], wait: float = 0.0) -> dict[str,
         result = agent.run_sync(judge_prompt(case))
         out: JudgeResult = result.output
         verdicts[case["id"]] = {key: getattr(out, key).model_dump() for key, _ in LLM_CRITERIA}
+        out_of_range = out_of_range_lecture_reference(case["answer"])
+        if out_of_range is not None:
+            verdicts[case["id"]]["grounding"] = {
+                "reason": f"第{out_of_range}回は講座に存在しない回（第1〜13回以外）のため、根拠なし（fail）とコードで判定",
+                "verdict": "fail",
+            }
         verdicts[case["id"]]["lecture_mark"] = {
             "reason": "末尾（最後の行）に「第N回」があるかをコードで判定",
             "verdict": check_lecture_mark(case["answer"]),
