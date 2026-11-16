@@ -4,17 +4,22 @@
 「採点 → 人のラベルとの比較 → 要確認・不一致の集計」が通ることを確かめる。
 """
 
+from types import SimpleNamespace
+
 from app import judge
 from app.judge import (
     ALL_CRITERIA,
     DEFAULT_CASES,
     DEFAULT_RUBRIC,
+    CriterionVerdict,
+    JudgeResult,
     build_judge,
     build_test_model,
     check_lecture_mark,
     judge_cases,
     load_labels,
     overall,
+    out_of_range_lecture_reference,
     read_jsonl,
     summarize,
 )
@@ -26,6 +31,31 @@ def test_lecture_mark_is_checked_by_code():
     assert check_lecture_mark("LoRA は…\n\n関係する回：第2回") == "pass"
     assert check_lecture_mark("第2回で扱う LoRA は…\n\n以上です。") == "fail"  # 末尾に無ければ fail
     assert check_lecture_mark("") == "fail"
+
+
+def test_out_of_range_lecture_references_are_detected():
+    assert out_of_range_lecture_reference("関係する回：第13回") is None
+    assert out_of_range_lecture_reference("第14回の内容です") == 14
+    assert out_of_range_lecture_reference("第0回の内容です") == 0
+
+
+def test_out_of_range_lecture_overrides_llm_grounding_verdict():
+    class PassingJudge:
+        def run_sync(self, prompt):
+            passing = CriterionVerdict(reason="LLM は pass と判定", verdict="pass")
+            return SimpleNamespace(output=JudgeResult(
+                grounding=passing, scope=passing, hint=passing, clarity=passing
+            ))
+
+    cases = [
+        {"id": "valid", "question": "", "answer": "第13回を参照します。"},
+        {"id": "invalid", "question": "", "answer": "第14回を参照します。"},
+    ]
+    verdicts = judge_cases(PassingJudge(), cases)
+
+    assert verdicts["valid"]["grounding"]["verdict"] == "pass"
+    assert verdicts["invalid"]["grounding"]["verdict"] == "fail"
+    assert "コードで判定" in verdicts["invalid"]["grounding"]["reason"]
 
 
 def test_overall_requires_all_required_criteria():
