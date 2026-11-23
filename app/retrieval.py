@@ -138,6 +138,46 @@ def search(query: str) -> list[dict]:
         return [dict(row) for row in rows]
 
 
+def search_with_neighbors(query: str, radius: int = 1, source: Path = RAG_SOURCE) -> list[dict]:
+    """通常の検索結果に、同じ資料内の前後ページ本文を付けて返す。"""
+    if radius < 0:
+        raise ValueError("前後ページの範囲は0以上にしてください。")
+
+    hits = search(query)
+    pages_by_document = defaultdict(list)
+    for page in load_pages(source):
+        pages_by_document[page["document_id"]].append(page)
+
+    for pages in pages_by_document.values():
+        pages.sort(key=lambda page: page["page"])
+
+    seen = {hit["page_id"] for hit in hits}
+    for hit in hits:
+        if "document_id" not in hit or "page_id" not in hit:
+            continue
+        document_pages = pages_by_document.get(hit.get("document_id"), [])
+        page_index = next(
+            (index for index, page in enumerate(document_pages)
+             if page["page_id"] == hit["page_id"]),
+            None,
+        )
+        if page_index is None:
+            hit["neighbor_pages"] = {"previous": [], "next": []}
+            continue
+
+        previous = [
+            page for page in document_pages[max(0, page_index - radius):page_index]
+            if page["page_id"] not in seen
+        ]
+        following = [
+            page for page in document_pages[page_index + 1:page_index + radius + 1]
+            if page["page_id"] not in seen
+        ]
+        hit["neighbor_pages"] = {"previous": previous, "next": following}
+        seen.update(page["page_id"] for page in previous + following)
+    return hits
+
+
 def search_graph(query: str) -> dict:
     """ベクトル検索を入口に、前後ページと共通用語で候補を広げる。"""
     pages = {page["page_id"]: page for page in load_pages(RAG_SOURCE)}
@@ -201,11 +241,20 @@ def run_full_context(agent, question: str, model, instructions: str, prompt_temp
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="エージェントを使わず、講義資料の検索だけを実行する")
     parser.add_argument("query", help="調べたい内容")
+    parser.add_argument("--neighbors", action="store_true", help="各検索結果に前後1ページの本文を付ける")
     args = parser.parse_args()
-    for i, result in enumerate(search(args.query), 1):
+    results = search_with_neighbors(args.query) if args.neighbors else search(args.query)
+    for i, result in enumerate(results, 1):
         print(f"\n{'=' * 60}\n検索結果 {i}\n{'=' * 60}")
         print(f"講義: {result['document_title']}")
         print(f"章: {result['section']}")
         print(f"タイトル: {result['title']}")
         print(f"ページ: {result['page']}")
         print(f"\n{result['content']}")
+        if args.neighbors:
+            neighbors = result.get("neighbor_pages", {"previous": [], "next": []})
+            for label, pages in (("前ページ", neighbors["previous"]),
+                                 ("次ページ", neighbors["next"])):
+                for page in pages:
+                    print(f"\n--- {label}: PDF p.{page['page']} {page['title']} ---")
+                    print(page["content"])

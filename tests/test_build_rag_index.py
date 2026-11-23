@@ -54,3 +54,29 @@ def test_existing_index_survives_failed_rebuild(materials):
         build_index(source, database, rebuild=True, embedder=embed)
     assert database.read_bytes() == before
     assert not list(database.parent.glob(".rag-build-*"))
+
+
+def test_search_with_neighbors_adds_adjacent_pages(tmp_path, monkeypatch):
+    source = tmp_path / "lectures.json"
+    source.write_text(json.dumps([
+        {"id": "lec02-main", "title": "講義2", "content": [
+            {"section": "章", "content": [
+                {"id": "lec02-main-p051", "title": "ページ51", "page": 51, "content": "本文51"},
+                {"id": "lec02-main-p052", "title": "ページ52", "page": 52, "content": "本文52"},
+                {"id": "lec02-main-p053", "title": "ページ53", "page": 53, "content": "本文53"},
+            ]}
+        ]}
+    ], ensure_ascii=False), encoding="utf-8")
+    hit = {
+        "page_id": "lec02-main-p052",
+        "document_id": "lec02-main",
+        "title": "ページ52",
+        "page": 52,
+        "content": "本文52",
+    }
+    monkeypatch.setattr(retrieval, "search", lambda *_: [hit])
+
+    results = retrieval.search_with_neighbors("LoRA", source=source)
+
+    assert [page["page_id"] for page in results[0]["neighbor_pages"]["previous"]] == ["lec02-main-p051"]
+    assert [page["page_id"] for page in results[0]["neighbor_pages"]["next"]] == ["lec02-main-p053"]
